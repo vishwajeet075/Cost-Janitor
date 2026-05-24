@@ -1,5 +1,4 @@
 locals {
-  # Single source of truth for mandatory tags applied to every resource.
   common_tags = {
     Project     = var.project
     Environment = var.environment
@@ -26,7 +25,6 @@ resource "aws_security_group" "web" {
   description = "Web tier: HTTP/HTTPS open, SSH restricted to allowed CIDR"
   vpc_id      = module.network.vpc_id
 
-  # HTTP
   ingress {
     description = "HTTP from anywhere"
     from_port   = 80
@@ -35,7 +33,6 @@ resource "aws_security_group" "web" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # HTTPS
   ingress {
     description = "HTTPS from anywhere"
     from_port   = 443
@@ -44,9 +41,8 @@ resource "aws_security_group" "web" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # SSH — DEVIATION: spec says default 0.0.0.0/0; we require a restricted CIDR.
+  # DEVIATION: spec says default 0.0.0.0/0; we require a restricted CIDR.
   # See README "Decisions & deviations" for rationale.
-  # The variable has a validation block that rejects 0.0.0.0/0 entirely.
   ingress {
     description = "SSH from allowed CIDR only"
     from_port   = 22
@@ -101,24 +97,25 @@ resource "aws_s3_bucket_versioning" "app_logs" {
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "app_logs" {
-  bucket = aws_s3_bucket.app_logs.id
+# DEVIATION: aws_s3_bucket_lifecycle_configuration is intentionally omitted from
+# this stack. LocalStack 3.8.1 (the last free community version) hangs indefinitely
+# on this resource — its S3 lifecycle PUT API never returns a response, causing
+# terraform apply to time out. The lifecycle rule (expire noncurrent versions after
+# 30 days) is defined in code below but wrapped in a comment so it is visible for
+# real-AWS deployments. In production, remove the comment and apply normally.
+#
+# resource "aws_s3_bucket_lifecycle_configuration" "app_logs" {
+#   bucket = aws_s3_bucket.app_logs.id
+#   rule {
+#     id     = "expire-noncurrent-versions"
+#     status = "Enabled"
+#     filter {}
+#     noncurrent_version_expiration {
+#       noncurrent_days = var.noncurrent_version_expiry_days
+#     }
+#   }
+# }
 
-  rule {
-    id     = "expire-noncurrent-versions"
-    status = "Enabled"
-
-    # Empty filter means the rule applies to all objects in the bucket.
-    # Required by AWS provider >= 4.x to avoid deprecation warning becoming an error.
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days = var.noncurrent_version_expiry_days
-    }
-  }
-}
-
-# Block all public access — logs must never be publicly readable.
 resource "aws_s3_bucket_public_access_block" "app_logs" {
   bucket = aws_s3_bucket.app_logs.id
 
