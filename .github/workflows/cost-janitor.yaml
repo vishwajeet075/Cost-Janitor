@@ -55,96 +55,96 @@ jobs:
         working-directory: janitor
         run: pytest tests/ -v --tb=short
 
-  # ── Job 3: Cost Janitor dry-run scan (Moto-seeded environment) ───────────────
+  # ── Job 3: Full integration — LocalStack → Terraform → Janitor ───────────────
   cost-janitor:
     name: Cost Janitor dry-run scan
     runs-on: ubuntu-latest
-    needs: [unit-tests]   # only scan if tests pass
+    needs: [unit-tests]   # only run if unit tests pass
+
+    services:
+      localstack:
+        # Pinned to 3.8.1 — the last release before LocalStack required a paid
+        # auth token. Latest (v2026.5.x) exits with code 55 if no license is set.
+        image: localstack/localstack:3.8.1
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: ec2,s3,sts
+          DEFAULT_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          DEBUG: "0"
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health | grep -q '\"ec2\": \"available\"'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 30s
 
     env:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localhost:4566
 
     steps:
       - uses: actions/checkout@v4
 
+      # ── Python ────────────────────────────────────────────────────────────────
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: janitor/requirements.txt
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r janitor/requirements.txt
 
-      # ── Seed fake AWS resources via Moto ─────────────────────────────────────
-      # This script starts a moto_server process (HTTP mode) so that janitor.py
-      # can talk to it exactly like it would talk to LocalStack, via --endpoint-url.
-      - name: Seed orphan resources (Moto server)
+      # ── Terraform + tflocal ───────────────────────────────────────────────────
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Install terraform-local (tflocal)
+        run: pip install terraform-local
+
+      # ── Wait for LocalStack ───────────────────────────────────────────────────
+      # The service container health check runs in Docker's network.
+      # We do a second check from the runner's perspective (localhost:4566).
+      - name: Wait for LocalStack to accept connections
         run: |
-          pip install moto[server] --quiet
-
-          # Start moto in server mode on port 5000 in the background
-          python -m moto.server -p 5000 &
-          MOTO_PID=$!
-          echo "MOTO_PID=$MOTO_PID" >> $GITHUB_ENV
-
-          # Wait for it to be ready
-          for i in $(seq 1 20); do
-            if curl -sf http://localhost:5000/ > /dev/null 2>&1; then
-              echo "✅ Moto server is ready"
+          echo "Waiting for LocalStack on localhost:4566..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/_localstack/health | grep -q '"ec2": "available"'; then
+              echo "✅ LocalStack is ready (attempt $i)"
               break
             fi
-            echo "  attempt $i/20 — waiting..."
-            sleep 2
+            echo "  attempt $i/30 — not ready yet, sleeping 5s..."
+            sleep 5
           done
+          # Hard fail if still not up after 150s
+          curl -sf http://localhost:4566/_localstack/health | grep -q '"ec2": "available"'
+          echo "LocalStack health confirmed."
 
-          # Seed resources: unattached EBS, idle EIP, stopped EC2, untagged instance
-          python - <<'EOF'
-          import boto3
+      # ── Terraform apply — provisions real (local) infra ───────────────────────
+      # This creates the VPC, subnets, EC2 instances, S3 bucket, and — crucially —
+      # the intentionally unattached EBS volume that Part B is designed to catch.
+      - name: Terraform init (via tflocal)
+        working-directory: terraform
+        run: tflocal init -input=false
 
-          ec2 = boto3.client(
-              "ec2",
-              region_name="us-east-1",
-              endpoint_url="http://localhost:5000",
-              aws_access_key_id="test",
-              aws_secret_access_key="test",
-          )
+      - name: Terraform validate
+        working-directory: terraform
+        run: tflocal validate
 
-          FULL_TAGS = [
-              {"Key": "Project",     "Value": "nimbuskart"},
-              {"Key": "Environment", "Value": "staging"},
-              {"Key": "Owner",       "Value": "platform-team"},
-              {"Key": "ManagedBy",   "Value": "terraform"},
-          ]
+      - name: Terraform apply (provision NimbusKart baseline infra on LocalStack)
+        working-directory: terraform
+        # All variables have defaults so no -var flags needed.
+        # ssh_allowed_cidr defaults to 10.0.0.0/8 which passes the validation guard.
+        run: tflocal apply -auto-approve -input=false
 
-          # 1. Unattached EBS volume — the intentional orphan from Part A
-          ec2.create_volume(
-              AvailabilityZone="us-east-1a",
-              Size=20,
-              VolumeType="gp3",
-              TagSpecifications=[{"ResourceType": "volume", "Tags": FULL_TAGS}],
-          )
-          print("Seeded: unattached EBS volume (20 GB gp3)")
-
-          # 2. Idle Elastic IP (no instance associated)
-          ec2.allocate_address(Domain="vpc")
-          print("Seeded: idle Elastic IP")
-
-          # 3. EC2 instance with no tags (triggers missing-tags scanner)
-          ec2.run_instances(
-              ImageId="ami-00000000",   # Moto accepts any string
-              MinCount=1,
-              MaxCount=1,
-              # Intentionally no tags — should be flagged
-          )
-          print("Seeded: untagged running EC2 instance")
-
-          print("✅ All seed resources created")
-          EOF
-
-      # ── Run the janitor against the Moto server ───────────────────────────────
+      # ── Run Cost Janitor ──────────────────────────────────────────────────────
       - name: Run Cost Janitor (dry-run)
         id: janitor
         working-directory: janitor
@@ -152,10 +152,11 @@ jobs:
           python janitor.py \
             --dry-run \
             --region us-east-1 \
-            --endpoint-url http://localhost:5000 \
+            --endpoint-url http://localhost:4566 \
             --stopped-days 14 \
             --output-dir ../reports
-        # exit 1 = orphans found; we still want artifacts + PR comment before failing
+        # exit 1 = orphans found — expected and intentional.
+        # continue-on-error so artifact upload + PR comment still run.
         continue-on-error: true
 
       - name: Capture janitor result
@@ -263,7 +264,7 @@ jobs:
               });
             }
 
-      # ── Fail AFTER artifacts and comments are done ────────────────────────────
+      # ── Fail AFTER artifacts and comments ────────────────────────────────────
       - name: Fail if orphans found
         if: steps.result.outputs.orphans_found == 'true'
         run: |
