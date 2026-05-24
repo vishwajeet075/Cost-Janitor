@@ -1,6 +1,5 @@
 locals {
   # Single source of truth for mandatory tags applied to every resource.
-  # All resources merge this map and add their own Name tag on top.
   common_tags = {
     Project     = var.project
     Environment = var.environment
@@ -24,7 +23,7 @@ module "network" {
 # ── Security Group ────────────────────────────────────────────────────────────
 resource "aws_security_group" "web" {
   name        = "${var.project}-${var.environment}-web-sg"
-  description = "Web tier: allow HTTP/HTTPS from anywhere; SSH from restricted CIDR only"
+  description = "Web tier: HTTP/HTTPS open, SSH restricted to allowed CIDR"
   vpc_id      = module.network.vpc_id
 
   # HTTP
@@ -49,14 +48,13 @@ resource "aws_security_group" "web" {
   # See README "Decisions & deviations" for rationale.
   # The variable has a validation block that rejects 0.0.0.0/0 entirely.
   ingress {
-    description = "SSH from allowed CIDR only — never open to 0.0.0.0/0"
+    description = "SSH from allowed CIDR only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.ssh_allowed_cidr]
   }
 
-  # Allow all outbound traffic (standard for application servers)
   egress {
     description = "All outbound traffic"
     from_port   = 0
@@ -110,6 +108,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_logs" {
     id     = "expire-noncurrent-versions"
     status = "Enabled"
 
+    # Empty filter means the rule applies to all objects in the bucket.
+    # Required by AWS provider >= 4.x to avoid deprecation warning becoming an error.
+    filter {}
+
     noncurrent_version_expiration {
       noncurrent_days = var.noncurrent_version_expiry_days
     }
@@ -127,15 +129,13 @@ resource "aws_s3_bucket_public_access_block" "app_logs" {
 }
 
 # ── Orphan EBS Volume (intentional — seed for Part B) ────────────────────────
-# This volume is deliberately left unattached so the Cost Janitor can detect it.
-# In a real account this pattern (available EBS volume) is one of the most
-# common sources of silent waste.
+# Deliberately left unattached so the Cost Janitor can detect it.
 resource "aws_ebs_volume" "orphan" {
   availability_zone = var.availability_zones[0]
   size              = var.orphan_ebs_size_gb
   type              = "gp3"
 
-  # NOTE: Protected tag is intentionally absent — the Janitor should flag this.
+  # Protected tag intentionally absent — the Janitor should flag this.
   tags = merge(local.common_tags, {
     Name   = "${var.project}-${var.environment}-orphan-ebs"
     Notice = "intentional-orphan-for-cost-janitor-testing"
