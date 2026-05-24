@@ -1,0 +1,242 @@
+name: Cost Janitor
+
+on:
+  pull_request:
+    branches: ["main", "master"]
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to post PR comments
+
+jobs:
+  cost-janitor:
+    name: Scan for orphaned AWS resources
+    runs-on: ubuntu-latest
+
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: ec2,s3,sts,iam
+          DEFAULT_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          DEBUG: "0"
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health | grep -q '\"ec2\": \"available\"'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 30s
+
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localhost:4566
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: janitor/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r janitor/requirements.txt
+
+      # ── 3. Set up Terraform ──────────────────────────────────────────────────
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Install terraform-local (tflocal)
+        run: pip install terraform-local
+
+      # ── 4. Wait for LocalStack to be fully ready ─────────────────────────────
+      - name: Wait for LocalStack health
+        run: |
+          echo "Waiting for LocalStack to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/_localstack/health | grep -q '"ec2": "available"'; then
+              echo "✅ LocalStack is ready"
+              break
+            fi
+            echo "  attempt $i/30 — not ready yet, sleeping 5s..."
+            sleep 5
+          done
+          # Final check — fail fast if still not up
+          curl -sf http://localhost:4566/_localstack/health | grep '"ec2": "available"'
+
+      # ── 5. Terraform init, validate, apply ───────────────────────────────────
+      - name: Terraform fmt check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+        continue-on-error: true   # advisory — doesn't block the pipeline
+
+      - name: Terraform init (via tflocal)
+        working-directory: terraform
+        run: tflocal init -input=false
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: tflocal validate
+
+      - name: Terraform apply (provision NimbusKart baseline infra)
+        working-directory: terraform
+        # All variables have defaults (environment=staging, region=us-east-1, etc.)
+        # so no -var overrides are needed. The ssh_allowed_cidr default is 10.0.0.0/8
+        # which passes the validation guard (blocks 0.0.0.0/0 intentionally).
+        run: tflocal apply -auto-approve -input=false
+
+      # ── 6. Run Cost Janitor in --dry-run mode ────────────────────────────────
+      - name: Run Cost Janitor (dry-run)
+        id: janitor
+        working-directory: janitor
+        run: |
+          python janitor.py \
+            --dry-run \
+            --region us-east-1 \
+            --endpoint-url http://localhost:4566 \
+            --stopped-days 14 \
+            --output-dir ../reports
+        # exit 1 means orphans found — we capture this and still continue
+        # so we can upload artifacts and post PR comment before failing
+        continue-on-error: true
+
+      - name: Capture janitor exit code
+        id: exit_code
+        run: |
+          echo "code=${{ steps.janitor.outcome }}" >> $GITHUB_OUTPUT
+          # Translate outcome to numeric for clarity in later steps
+          if [ "${{ steps.janitor.outcome }}" = "failure" ]; then
+            echo "orphans_found=true" >> $GITHUB_OUTPUT
+          else
+            echo "orphans_found=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 7. Upload report artifacts ───────────────────────────────────────────
+      - name: Upload cost janitor reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cost-janitor-reports
+          path: |
+            reports/report.json
+            reports/report.md
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 8. Post PR comment when orphans are found ────────────────────────────
+      - name: Read Markdown report
+        id: read_report
+        if: github.event_name == 'pull_request' && steps.exit_code.outputs.orphans_found == 'true'
+        run: |
+          if [ -f reports/report.md ]; then
+            # GitHub comment body has a ~65k char limit; truncate safely
+            REPORT=$(head -c 60000 reports/report.md)
+            # Use a delimiter to handle multiline content in GITHUB_OUTPUT
+            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+            echo "body<<$EOF" >> $GITHUB_OUTPUT
+            echo "$REPORT" >> $GITHUB_OUTPUT
+            echo "$EOF" >> $GITHUB_OUTPUT
+          else
+            echo "body=⚠️ Cost Janitor found orphans but report.md is missing." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post orphan summary as PR comment
+        if: github.event_name == 'pull_request' && steps.exit_code.outputs.orphans_found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ⚠️ Cost Janitor — Orphaned Resources Detected\n\n` +
+                         `${{ steps.read_report.outputs.body }}\n\n` +
+                         `---\n` +
+                         `_Run by [Cost Janitor workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_`;
+
+            // Find and update an existing bot comment, or create a new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Cost Janitor — Orphaned Resources Detected')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # ── 9. Post "all clean" comment when no orphans found ───────────────────
+      - name: Post clean bill of health as PR comment
+        if: github.event_name == 'pull_request' && steps.exit_code.outputs.orphans_found == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Cost Janitor')
+            );
+
+            const body = `## ✅ Cost Janitor — No Orphaned Resources Found\n\n` +
+                         `Scan completed cleanly. No orphaned EBS volumes, stopped EC2 instances, ` +
+                         `idle Elastic IPs, or untagged resources were detected.\n\n` +
+                         `---\n` +
+                         `_Run by [Cost Janitor workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_`;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # ── 10. Fail the job if orphans were found ───────────────────────────────
+      # This must come AFTER artifact upload and PR comment so those always run.
+      - name: Fail pipeline if orphans found
+        if: steps.exit_code.outputs.orphans_found == 'true'
+        run: |
+          echo "❌ Cost Janitor found orphaned resources. See the report artifact for details."
+          echo "   Fix the orphans, tag resources correctly, or add Protected=true to intentional exceptions."
+          exit 1
