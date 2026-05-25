@@ -1,0 +1,137 @@
+{
+  "scan_timestamp": "2026-05-25T12:41:55Z",
+  "account_id": "000000000000",
+  "region": "us-east-1",
+  "summary": {
+    "total_orphans": 9,
+    "estimated_monthly_waste_usd": 30.6
+  },
+  "findings": [
+    {
+      "resource_id": "vol-a5b6f1c5",
+      "resource_type": "ebs_volume",
+      "reason": "unattached",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 1.6,
+      "tags": {
+        "Project": "nimbuskart",
+        "Environment": "staging",
+        "Owner": "platform-team"
+      },
+      "suggested_action": "delete",
+      "safe_to_auto_delete": true
+    },
+    {
+      "resource_id": "vol-8c0f6d75",
+      "resource_type": "ebs_volume",
+      "reason": "unattached|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 5.0,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "delete",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "vol-e6749f89",
+      "resource_type": "ebs_volume",
+      "reason": "unattached|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 5.0,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "delete",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "vol-707ab632",
+      "resource_type": "ebs_volume",
+      "reason": "unattached|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 5.0,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "delete",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "i-a0042c130e55d3950",
+      "resource_type": "ec2_instance",
+      "reason": "stopped>14d|missing_tags:Project,Environment,Owner",
+      "age_days": 15,
+      "estimated_monthly_cost_usd": 1.6,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "terminate",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "i-cd96df535f4aec325",
+      "resource_type": "ec2_instance",
+      "reason": "stopped>14d|missing_tags:Project,Environment,Owner",
+      "age_days": 15,
+      "estimated_monthly_cost_usd": 1.6,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "terminate",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "eipalloc-d0815a1f",
+      "resource_type": "elastic_ip",
+      "reason": "unassociated|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 3.6,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "release",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "eipalloc-16654873",
+      "resource_type": "elastic_ip",
+      "reason": "unassociated|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 3.6,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "release",
+      "safe_to_auto_delete": false
+    },
+    {
+      "resource_id": "eipalloc-e1b24434",
+      "resource_type": "elastic_ip",
+      "reason": "unassociated|missing_tags:Project,Environment,Owner",
+      "age_days": 0,
+      "estimated_monthly_cost_usd": 3.6,
+      "tags": {
+        "Project": null,
+        "Environment": null,
+        "Owner": null
+      },
+      "suggested_action": "release",
+      "safe_to_auto_delete": false
+    }
+  ]
+}

@@ -9,10 +9,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write   # needed to post PR comments
+  pull-requests: write   
 
 jobs:
-  # ── Job 1: Terraform lint (no cloud needed) ──────────────────────────────────
+
   terraform-validate:
     name: Terraform fmt & validate
     runs-on: ubuntu-latest
@@ -27,7 +27,7 @@ jobs:
         working-directory: terraform
         run: terraform fmt -check -recursive
 
-      - name: Terraform init (local backend, no cloud)
+      - name: Terraform init
         working-directory: terraform
         run: terraform init -backend=false -input=false
 
@@ -35,9 +35,8 @@ jobs:
         working-directory: terraform
         run: terraform validate
 
-  # ── Job 2: Unit tests (pure Moto, no Docker) ─────────────────────────────────
   unit-tests:
-    name: Janitor unit tests (Moto)
+    name: Janitor unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,16 +54,14 @@ jobs:
         working-directory: janitor
         run: pytest tests/ -v --tb=short
 
-  # ── Job 3: Full integration — LocalStack → Terraform → Janitor ───────────────
+
   cost-janitor:
     name: Cost Janitor dry-run scan
     runs-on: ubuntu-latest
-    needs: [unit-tests]   # only run if unit tests pass
+    needs: [unit-tests]  
 
     services:
       localstack:
-        # Pinned to 3.8.1 — the last release before LocalStack required a paid
-        # auth token. Latest (v2026.5.x) exits with code 55 if no license is set.
         image: localstack/localstack:3.8.1
         ports:
           - 4566:4566
@@ -91,7 +88,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Python ────────────────────────────────────────────────────────────────
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -101,7 +97,6 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r janitor/requirements.txt
 
-      # ── Terraform + tflocal ───────────────────────────────────────────────────
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
@@ -109,15 +104,12 @@ jobs:
       - name: Install terraform-local (tflocal)
         run: pip install terraform-local
 
-      # ── Wait for LocalStack ───────────────────────────────────────────────────
-      # The service container health check runs in Docker's network.
-      # We do a second check from the runner's perspective (localhost:4566).
       - name: Wait for LocalStack to accept connections
         run: |
           echo "Waiting for LocalStack on localhost:4566..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:4566/_localstack/health | grep -q '"ec2": "available"'; then
-              echo "✅ LocalStack is ready (attempt $i)"
+              echo "LocalStack is ready (attempt $i)"
               break
             fi
             echo "  attempt $i/30 — not ready yet, sleeping 5s..."
@@ -127,10 +119,7 @@ jobs:
           curl -sf http://localhost:4566/_localstack/health | grep -q '"ec2": "available"'
           echo "LocalStack health confirmed."
 
-      # ── Terraform apply — provisions real (local) infra ───────────────────────
-      # This creates the VPC, subnets, EC2 instances, S3 bucket, and — crucially —
-      # the intentionally unattached EBS volume that Part B is designed to catch.
-      - name: Terraform init (via tflocal)
+      - name: Terraform init
         working-directory: terraform
         run: tflocal init -input=false
 
@@ -138,13 +127,10 @@ jobs:
         working-directory: terraform
         run: tflocal validate
 
-      - name: Terraform apply (provision NimbusKart baseline infra on LocalStack)
+      - name: Terraform apply
         working-directory: terraform
-        # All variables have defaults so no -var flags needed.
-        # ssh_allowed_cidr defaults to 10.0.0.0/8 which passes the validation guard.
         run: tflocal apply -auto-approve -input=false
 
-      # ── Run Cost Janitor ──────────────────────────────────────────────────────
       - name: Run Cost Janitor (dry-run)
         id: janitor
         working-directory: janitor
@@ -155,8 +141,6 @@ jobs:
             --endpoint-url http://localhost:4566 \
             --stopped-days 14 \
             --output-dir ../reports
-        # exit 1 = orphans found — expected and intentional.
-        # continue-on-error so artifact upload + PR comment still run.
         continue-on-error: true
 
       - name: Capture janitor result
@@ -168,7 +152,6 @@ jobs:
             echo "orphans_found=false" >> $GITHUB_OUTPUT
           fi
 
-      # ── Upload reports ────────────────────────────────────────────────────────
       - name: Upload cost janitor reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -180,7 +163,6 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # ── PR comment: orphans found ─────────────────────────────────────────────
       - name: Read Markdown report
         id: read_report
         if: github.event_name == 'pull_request' && steps.result.outputs.orphans_found == 'true'
@@ -191,7 +173,7 @@ jobs:
             head -c 60000 reports/report.md >> $GITHUB_OUTPUT
             echo "$EOF" >> $GITHUB_OUTPUT
           else
-            echo "body=⚠️ Cost Janitor found orphans but report.md is missing." >> $GITHUB_OUTPUT
+            echo "body=Cost Janitor found orphans but report.md is missing." >> $GITHUB_OUTPUT
           fi
 
       - name: Post orphans PR comment
@@ -199,7 +181,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const body = `## ⚠️ Cost Janitor — Orphaned Resources Detected\n\n` +
+            const body = `## Cost Janitor — Orphaned Resources Detected\n\n` +
                          `${{ steps.read_report.outputs.body }}\n\n` +
                          `---\n` +
                          `_Run by [workflow #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_`;
@@ -228,13 +210,13 @@ jobs:
               });
             }
 
-      # ── PR comment: all clean ─────────────────────────────────────────────────
+
       - name: Post clean PR comment
         if: github.event_name == 'pull_request' && steps.result.outputs.orphans_found == 'false'
         uses: actions/github-script@v7
         with:
           script: |
-            const body = `## ✅ Cost Janitor — No Orphaned Resources Found\n\n` +
+            const body = `##Cost Janitor — No Orphaned Resources Found\n\n` +
                          `Scan completed cleanly. No orphaned EBS volumes, stopped EC2 instances, ` +
                          `idle Elastic IPs, or untagged resources were detected.\n\n` +
                          `---\n` +
@@ -264,10 +246,9 @@ jobs:
               });
             }
 
-      # ── Fail AFTER artifacts and comments ────────────────────────────────────
       - name: Fail if orphans found
         if: steps.result.outputs.orphans_found == 'true'
         run: |
-          echo "❌ Orphaned resources detected. See report artifact for details."
+          echo "Orphaned resources detected. See report artifact for details."
           echo "   Tag resources correctly or add Protected=true to suppress."
           exit 1

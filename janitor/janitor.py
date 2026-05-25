@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Cost Janitor — NimbusKart orphan resource scanner.
 
@@ -88,7 +87,6 @@ def make_finding(
     safe_to_auto_delete: bool,
 ) -> dict:
     """Build a single findings entry matching the required report schema."""
-    # Only include the required tag keys in the report output
     tag_snapshot = {k: tags.get(k) for k in REQUIRED_TAGS}
     return {
         "resource_id": resource_id,
@@ -373,7 +371,7 @@ def build_markdown(report: dict) -> str:
     ts = report["scan_timestamp"]
 
     lines = [
-        "# 🗑️ Cost Janitor Report",
+        "# Cost Janitor Report",
         "",
         f"**Scan time:** {ts}  ",
         f"**Account:** `{report['account_id']}`  ",
@@ -389,7 +387,7 @@ def build_markdown(report: dict) -> str:
     ]
 
     if not findings:
-        lines += ["## ✅ No orphaned resources found.", ""]
+        lines += ["## No orphaned resources found.", ""]
         return "\n".join(lines)
 
     lines += ["## Findings", ""]
@@ -397,7 +395,7 @@ def build_markdown(report: dict) -> str:
     lines += ["|-------------|------|--------|-----------|-------------|----------------|"]
 
     for f in findings:
-        safe = "✅ Yes" if f["safe_to_auto_delete"] else "⚠️ No"
+        safe = "Yes" if f["safe_to_auto_delete"] else "No"
         lines.append(
             f"| `{f['resource_id']}` "
             f"| {f['resource_type']} "
@@ -410,7 +408,7 @@ def build_markdown(report: dict) -> str:
     lines += [
         "",
         "---",
-        "> Resources marked ⚠️ are not safe to auto-delete.",
+        "> Resources marked are not safe to auto-delete.",
         "> They may be missing tags, carry `Protected=true`, or are running instances.",
         "> Review manually before taking action.",
         "",
@@ -507,8 +505,6 @@ def main(argv: list[str] | None = None) -> int:
         "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID", "test"),
         "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY", "test"),
     }
-    # Only inject endpoint_url when explicitly set (LocalStack / CI).
-    # Omitting it allows moto to intercept in unit tests without a running server.
     if args.endpoint_url:
         client_kwargs["endpoint_url"] = args.endpoint_url
 
@@ -562,8 +558,6 @@ def main(argv: list[str] | None = None) -> int:
     log.info("  JSON : %s", report_json_path)
     log.info("  MD   : %s", report_md_path)
 
-    # ── Exit code ─────────────────────────────────────────────────────────────
-    # Non-zero in dry-run if orphans were found (so CI can fail the PR check)
     if args.dry_run and all_findings:
         log.warning("Orphans found in dry-run mode — exiting with code 1")
         return 1
