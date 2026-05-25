@@ -113,4 +113,19 @@ All five metrics are emitted via `boto3` `put_metric_data` into a `CostJanitor` 
 
 ## 5. What I Did Not Build
 
-The following were consciously left out given the time budget and scope of a local demo assignment: multi-account scanning (the Janitor assumes a single account; production would use AWS Organizations + `sts:AssumeRole` per account in a loop), RDS snapshot and Lambda function orphan detection (the four required patterns were prioritised), a real approval gate before delete mode (currently just a CLI flag; production needs a human-in-the-loop step such as a Slack approval bot or a manual GitHub Actions confirmation input), persistent scan history (each run overwrites `report.json`; production would write to S3 with a timestamped key for trend analysis), and cost estimate accuracy (static per-unit prices are used; production would call the AWS Cost Explorer or Pricing API for real-time figures).
+The following were intentionally left out due to scope/time:
+
+- **Multi-account scanning**  
+  Current version assumes one account...
+
+- **Additional resource types**  
+  RDS snapshots and Lambda...
+
+- **Approval gate before deletion**  
+  Current delete mode uses a CLI flag...
+
+- **Persistent scan history**  
+  Current run overwrites `report.json`...
+
+- **Live pricing integration**  
+  Static per-unit pricing...

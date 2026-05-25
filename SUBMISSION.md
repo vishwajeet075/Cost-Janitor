@@ -16,7 +16,7 @@
 
 ## Walkthrough video
 
-Link (Loom / YouTube unlisted / Google Drive): [ADD YOUR VIDEO LINK HERE]
+Link (Google Drive): [https://drive.google.com/drive/folders/1LjTvaWz1gL8fT8NoyLujx5vAEJAXACru?usp=sharing]
 
 ## Sample report
 
